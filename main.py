@@ -1,29 +1,30 @@
 import sys
-import sqlite3
 import os
+import json
 
 from getpass import getpass
-from dbox_filesync import DropBoxSync
 from pysqlcipher3 import dbapi2 as sqlite
+from dbox_filesync import DropboxSync
+
 
 class UnlockedDbCursor():
     def __init__(self, db):
         self.db = db
 
     def __enter__(self):
-        # Todo unlock db
         self.conn = sqlite.connect(self.db)
         self.c = self.conn.cursor()
         self.c.execute("PRAGMA key='%s'" % getpass())
         return self.c
+
     def __exit__(self, type, value, tb):
-        # Todo lock db
         self.conn.commit()
         self.c.close()
         self.conn.close()
 
-def new(args, flags):
-    if '-f' not in flags and '--force' not in flags: 
+
+def new(args, flags, config):
+    if '-f' not in flags and '--force' not in flags:
         conf = input(
             "Are you sure? "
             "This will remove already existing local db-files "
@@ -32,82 +33,119 @@ def new(args, flags):
         if conf not in ['y', 'Y']:
             return 0
 
-    with UnlockedDbCursor('database.db') as cursor: 
+    with UnlockedDbCursor(PATH + config['db']) as cursor:
         cursor.execute(
             'CREATE TABLE passwords (identifier text, password text)'
         )
 
+
 def _get_identifer(cmd, args):
     identifier_index = args.index(cmd) + 1
     if len(args) <= identifier_index:
-        return -1
+        return '__err'
     else:
         return args[identifier_index]
 
-def get(args, flags):
+
+def get(args, flags, config):
     identifier = _get_identifer('get', args)
-    if identifier == -1:
-        print('Err missing id')
+    if identifier is '__err':
+        print('Err: No such identifier')
         return 0
 
-    with UnlockedDbCursor('database.db') as cursor: 
-        cursor.execute('SELECT password FROM passwords WHERE identifier=?', (identifier, ))
+    with UnlockedDbCursor(PATH + config['db']) as cursor:
+        cursor.execute(
+                'SELECT password FROM passwords WHERE identifier=?',
+                (identifier, )
+        )
         print(cursor.fetchone()[0])
+
 
 def _gen_pwd():
     # ToDo
     return 'correcthorsebatterystaple'
 
-def generate(args, flags):
+
+def generate(args, flags, config):
     identifier = _get_identifer('generate', args)
 
-
-    if identifier == -1:
-        print('Err missing id')
+    if identifier is '__err':
+        print('Err: Missing identifier')
         return 0
 
     pwd = _gen_pwd()
 
-    with UnlockedDbCursor('database.db') as cursor: 
-        cursor.execute('INSERT INTO passwords VALUES (?, ?)', (identifier, pwd))
+    with UnlockedDbCursor(PATH + config['db']) as cursor:
+        cursor.execute(
+                'INSERT INTO passwords VALUES (?, ?)',
+                (identifier, pwd)
+        )
 
-def pull_db(args, flags):
-    if os.environ.get('CLOUD') == None:
-        print('Err no cloud')
+def pull_db(args, flags, config):
+    if 'cloud' not in config:
+        print('Err: No cloud settings') 
+        return 0
+
+    if 'provider' not in config['cloud']:
+        print('Err: No service provider')
+        return 0
+
+    if 'token' not in config['cloud']:
+        print('Err: Token missing')
         return 0
     
-    print(cloud.pull('database.db'))
+    cloud = DropboxSync(config['cloud']['token'])
+    print(cloud.pull(PATH + config['db'], config['db']))
 
-def push_db(args, flags):
-    if os.environ.get('CLOUD') == None:
-        print('Err no cloud')
+def push_db(args, flags, config):
+    if 'cloud' not in config:
+        print('Err: No cloud settings') 
+        return 0
+
+    if 'provider' not in config['cloud']:
+        print('Err: No service provider')
+        return 0
+
+    if 'token' not in config['cloud']:
+        print('Err: Token missing')
         return 0
     
-    print(cloud.push('database.db'))
+    cloud = DropboxSync(config['cloud']['token'])
+    print(cloud.push(PATH + config['db'], config['db']))
+
 
 def main():
     commands = {
-        'new' : new, 
-        'get' : get, 
-        'generate' : generate,
-        'pull-db' : pull_db,
-        'push-db' : push_db
+        'new': new,
+        'get': get,
+        'generate': generate,
+        'pull-db': pull_db,
+        'push-db': push_db
     }
 
     flags = [x for x in sys.argv if x.startswith('-')]
     args = [x for x in sys.argv if x not in flags]
 
+    if len(args) < 2:
+        print('Err: Missing command')
+        return 0
+
     command = args[1]
     if command not in commands:
-        print('Err missing cmd')
+        print('Err: Incorrect command')
         return 0
-    else:
-        commands[command](args, flags)
+    
+    
+    config = {}
+    if os.path.isfile(PATH + 'config.json'):
+        with open(PATH + 'config.json') as f:
+            config = json.load(f)
 
-if os.environ.get('CLOUD') != None:
-    cloud = DropBoxSync(os.environ.get('TOKEN'))
+    if 'db' not in config:
+        config['db'] = 'database.db'
 
+    commands[command](args, flags, config)
+
+PATH = ''
 if __name__ == '__main__':
     main()
-
-
