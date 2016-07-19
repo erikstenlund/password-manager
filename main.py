@@ -13,6 +13,7 @@ import sys
 import os
 import json
 
+from docopt import docopt
 from getpass import getpass
 from dbox_filesync import DropboxSync
 from pysqlcipher3 import dbapi2 as sqlite
@@ -21,14 +22,15 @@ from pysqlcipher3 import dbapi2 as sqlite
 class UnlockedDbCursor():
     def __init__(self, db, pwd=None):
         self.db = db
+        self.pwd = pwd
 
     def __enter__(self):
         self.conn = sqlite.connect(self.db)
         self.c = self.conn.cursor()
-        if pwd is None:
+        if self.pwd is None:
             self.c.execute("PRAGMA key='%s'" % getpass())
         else:
-            self.c.execute("PRAGMA key='%s'" % pwd)
+            self.c.execute("PRAGMA key='%s'" % self.pwd)
         return self.c
 
     def __exit__(self, type, value, tb):
@@ -37,8 +39,8 @@ class UnlockedDbCursor():
         self.conn.close()
 
 
-def new(args, flags, config):
-    if '-f' not in flags and '--force' not in flags:
+def new(unlockedDbCursor, args):
+    if args['--force'] == False:
         conf = input(
             "Are you sure? "
             "This will remove already existing local db-files "
@@ -47,32 +49,22 @@ def new(args, flags, config):
         if conf not in ['y', 'Y']:
             return 0
 
-    with UnlockedDbCursor(PATH + config['db']) as cursor:
+    with unlockedDbCursor as cursor:
         cursor.execute(
             'CREATE TABLE passwords (identifier text, password text)'
         )
 
+def get(unlockedDbCursor, args):
 
-def _get_identifier(cmd, args):
-    identifier_index = args.index(cmd) + 1
-    if len(args) <= identifier_index:
-        return '__err'
-    else:
-        return args[identifier_index]
+    if args['<identifier>'] == False:
+        return 'Err: No identifier'
 
-
-def get(args, flags, config):
-    identifier = _get_identifier('get', args)
-    if identifier is '__err':
-        print('Err: No such identifier')
-        return 0
-
-    with UnlockedDbCursor(PATH + config['db']) as cursor:
+    with unlockedDbCursor as cursor:
         cursor.execute(
                 'SELECT password FROM passwords WHERE identifier=?',
-                (identifier, )
+                (args['<identifier>'], )
         )
-        print(cursor.fetchone()[0])
+        return cursor.fetchone()[0]
 
 
 def _gen_pwd():
@@ -80,20 +72,18 @@ def _gen_pwd():
     return 'correcthorsebatterystaple'
 
 
-def generate(args, flags, config):
-    identifier = _get_identifier('generate', args)
+def generate(unlockedDbCursor, args):
 
-    if identifier is '__err':
-        print('Err: Missing identifier')
-        return 0
+    if args['<identifier>'] == False:
+        return 'Err: No identifier'
 
     pwd = _gen_pwd()
-
-    with UnlockedDbCursor(PATH + config['db']) as cursor:
+    with unlockedDbCursor as cursor:
         cursor.execute(
                 'INSERT INTO passwords VALUES (?, ?)',
-                (identifier, pwd)
+                (args['<identifier>'], pwd)
         )
+        return cursor.fetchone()
 
 def pull_db(cloud, cloud_config, db):
     if 'provider' not in cloud_config:
@@ -115,53 +105,50 @@ def push_db(cloud, cloud_config, db):
 
 
 def main():
+    args = docopt(__doc__)
 
-    if '-c' in sys.argv:
-        config_path = sys.argv[sys.argv.index('-c') + 1]
-        sys.argv.remove(config_path)
-        sys.argv.remove('-c')
+    # If not provided use default config
+    if args['-c'] is None:     
+       args['-c']  = 'config.json'
+         
+    config = {}
+    if os.path.isfile(PATH + args['-c']):
+        with open(PATH + args['-c']) as f:
+            config = json.load(f)
     else:
-        config_path = 'config.json'
-
-    print(config_path)
-
-    flags = [x for x in sys.argv if x.startswith('-')]
-    args = [x for x in sys.argv if x not in flags]
-
-    if len(args) < 2:
-        print('Err: Missing command')
+        print('Err: Incorrect configuration file')
         return 0
 
-    command = args[1]
-    
-    
-    config = {}
-
-
-    if os.path.isfile(PATH + config_path):
-        with open(PATH + config_path) as f:
-            config = json.load(f)
-
+    # Use default database if nothing else
+    # is specified
     if 'db' not in config:
         config['db'] = 'database.db'
 
-    if command is 'new':
-        new()
-    elif command is 'get':
-        get()
-    elif command is 'generate':
-        generate()
+    if args['<cmd>'] in ['new', 'get', 'generate']:
 
-    elif command is 'pull-db' or 'push-db':
+        if args['-p'] is None:
+            dbCursor = UnlockedDbCursor(PATH + config['db'])
+        else:
+            dbCursor = UnlockedDbCursor(PATH + config['db'], args['-p'])
+
+        res = {
+            'new': new,
+            'get': get,
+            'generate': generate
+        }[args['<cmd>']](dbCursor, args)
+
+    elif args['<cmd>'] in ['pull-db', 'push-db']:
         if 'cloud' not in config:
             print('Err: No cloud settings') 
             return 0
 
         cloud = DropboxSync(config['cloud']['token'])
-        if command is 'pull-db':
-            res = pull_db(cloud, config['cloud'], config['db'])
-        else:
-            res = push_db()
+
+        res = {
+                'pull-db': pull_db,
+                'push-db': push_db
+        }[args['<cmd>']](cloud, config['cloud'], config['db'])
+
     # Default error state
     else:
         print('Err: Incorrect command')
