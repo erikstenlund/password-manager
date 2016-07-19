@@ -1,20 +1,34 @@
+"""
+Usage:
+    main.py [options] <cmd> [<identifier>]
+
+Options:
+    -c FILE
+    -f, --force
+    -p PASS
+
+
+"""
 import sys
 import os
 import json
 
 from getpass import getpass
-from pysqlcipher3 import dbapi2 as sqlite
 from dbox_filesync import DropboxSync
+from pysqlcipher3 import dbapi2 as sqlite
 
 
 class UnlockedDbCursor():
-    def __init__(self, db):
+    def __init__(self, db, pwd=None):
         self.db = db
 
     def __enter__(self):
         self.conn = sqlite.connect(self.db)
         self.c = self.conn.cursor()
-        self.c.execute("PRAGMA key='%s'" % getpass())
+        if pwd is None:
+            self.c.execute("PRAGMA key='%s'" % getpass())
+        else:
+            self.c.execute("PRAGMA key='%s'" % pwd)
         return self.c
 
     def __exit__(self, type, value, tb):
@@ -39,7 +53,7 @@ def new(args, flags, config):
         )
 
 
-def _get_identifer(cmd, args):
+def _get_identifier(cmd, args):
     identifier_index = args.index(cmd) + 1
     if len(args) <= identifier_index:
         return '__err'
@@ -48,7 +62,7 @@ def _get_identifer(cmd, args):
 
 
 def get(args, flags, config):
-    identifier = _get_identifer('get', args)
+    identifier = _get_identifier('get', args)
     if identifier is '__err':
         print('Err: No such identifier')
         return 0
@@ -67,7 +81,7 @@ def _gen_pwd():
 
 
 def generate(args, flags, config):
-    identifier = _get_identifer('generate', args)
+    identifier = _get_identifier('generate', args)
 
     if identifier is '__err':
         print('Err: Missing identifier')
@@ -81,47 +95,35 @@ def generate(args, flags, config):
                 (identifier, pwd)
         )
 
-def pull_db(args, flags, config):
-    if 'cloud' not in config:
-        print('Err: No cloud settings') 
-        return 0
+def pull_db(cloud, cloud_config, db):
+    if 'provider' not in cloud_config:
+        return 'Err: No service provider'
 
-    if 'provider' not in config['cloud']:
-        print('Err: No service provider')
-        return 0
-
-    if 'token' not in config['cloud']:
-        print('Err: Token missing')
-        return 0
+    if 'token' not in cloud_config:
+        return 'Err: Token missing'
     
-    cloud = DropboxSync(config['cloud']['token'])
-    print(cloud.pull(PATH + config['db'], config['db']))
+    return cloud.pull(PATH + db, db)
 
-def push_db(args, flags, config):
-    if 'cloud' not in config:
-        print('Err: No cloud settings') 
-        return 0
+def push_db(cloud, cloud_config, db):
+    if 'provider' not in cloud_config:
+        return 'Err: No service provider'
 
-    if 'provider' not in config['cloud']:
-        print('Err: No service provider')
-        return 0
-
-    if 'token' not in config['cloud']:
-        print('Err: Token missing')
-        return 0
+    if 'token' not in cloud_config:
+        return 'Err: Token missing'
     
-    cloud = DropboxSync(config['cloud']['token'])
-    print(cloud.push(PATH + config['db'], config['db']))
+    return cloud.push(PATH + db, db)
 
 
 def main():
-    commands = {
-        'new': new,
-        'get': get,
-        'generate': generate,
-        'pull-db': pull_db,
-        'push-db': push_db
-    }
+
+    if '-c' in sys.argv:
+        config_path = sys.argv[sys.argv.index('-c') + 1]
+        sys.argv.remove(config_path)
+        sys.argv.remove('-c')
+    else:
+        config_path = 'config.json'
+
+    print(config_path)
 
     flags = [x for x in sys.argv if x.startswith('-')]
     args = [x for x in sys.argv if x not in flags]
@@ -131,20 +133,43 @@ def main():
         return 0
 
     command = args[1]
-    if command not in commands:
-        print('Err: Incorrect command')
-        return 0
     
     
     config = {}
-    if os.path.isfile(PATH + 'config.json'):
-        with open(PATH + 'config.json') as f:
+
+
+    if os.path.isfile(PATH + config_path):
+        with open(PATH + config_path) as f:
             config = json.load(f)
 
     if 'db' not in config:
         config['db'] = 'database.db'
 
-    commands[command](args, flags, config)
+    if command is 'new':
+        new()
+    elif command is 'get':
+        get()
+    elif command is 'generate':
+        generate()
+
+    elif command is 'pull-db' or 'push-db':
+        if 'cloud' not in config:
+            print('Err: No cloud settings') 
+            return 0
+
+        cloud = DropboxSync(config['cloud']['token'])
+        if command is 'pull-db':
+            res = pull_db(cloud, config['cloud'], config['db'])
+        else:
+            res = push_db()
+    # Default error state
+    else:
+        print('Err: Incorrect command')
+        return 0
+
+    print(res)
+
+
 
 PATH = ''
 if __name__ == '__main__':
